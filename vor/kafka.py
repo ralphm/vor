@@ -5,6 +5,7 @@ Service for pulling Kafka stats.
 from __future__ import absolute_import
 
 import time
+
 from twisted.application import service
 from twisted.internet import task, utils
 from twisted.python import log
@@ -37,9 +38,14 @@ def parseOffsets(text):
         else:
             raise KafkaNoTopicError
 
-    offsets = {}
+    offsets = []
     for line in lines[1:-1]:
-        group, topic, pid, offset, logSize, lag, owner = line.split()
+        try:
+           group, topic, pid, offset, logSize, lag, owner = line.split()
+        except:
+           log.msg(format="Could not parse line: %(line)s", line=line)
+           log.err()
+           break
 
         offset = int(offset)
         if offset < 0:
@@ -53,10 +59,14 @@ def parseOffsets(text):
         if owner == 'none':
             owner = None
 
-        offsets[int(pid)] = {'offset': offset,
-                             'logSize': int(logSize),
-                             'lag': lag,
-                             'owner': owner}
+        offsets.append({
+            'group': group,
+            'topic': topic,
+            'pid': int(pid),
+            'offset': offset,
+            'logSize': int(logSize),
+            'lag': lag,
+            'owner': owner})
     return offsets
 
 
@@ -66,19 +76,19 @@ class KafkaGraphiteService(service.Service):
     Kafka consumer offset poller service.
     """
 
-    def __init__(self, command, zookeeper, group, topic):
+    def __init__(self, command, zookeeper, group, topics=None):
         self.command = command
         self.args = ["--zookeeper",
                      zookeeper,
                      "--group",
                      group,
-                     "--topic",
-                     topic
                      ]
 
-        self.basePath = "kafka.consumer.{topic}.{group}".format(
-            topic=sanitizeMetricElement(topic),
-            group=sanitizeMetricElement(group))
+        if topics:
+            self.args.append("--topic")
+            self.args.append(','.join(topics))
+
+        self.basePath = "kafka.consumer"
         self.lc = task.LoopingCall(self.poll)
         self.protocol = None
 
@@ -97,21 +107,30 @@ class KafkaGraphiteService(service.Service):
 
     def gotOffsets(self, offsets, prefix):
         timestamp = time.time()
-        for pid, offset in offsets.iteritems():
+        for offset in offsets:
             for name in ('offset', 'logSize', 'lag'):
                 if offset[name] is None:
                     continue
 
-                path = "{prefix}.{pid}.{name}".format(
+                path = "{prefix}.{topic}.{group}.{pid}.{name}".format(
+                    topic=sanitizeMetricElement(offset['topic']),
+                    group=sanitizeMetricElement(offset['group']),
                     prefix=prefix,
-                    pid=pid,
+                    pid=offset['pid'],
                     name=name)
                 self.sendMetric(path, offset[name], timestamp)
 
 
     def poll(self):
+        log.msg(format="Polling Kafka offsets: %(args)s", command=self.command, args=' '.join(self.args))
+        st = time.time()
+
+        def cb(result):
+            log.msg(format="Got Kafka offsets: %(args)s took %(elapsed)d", command=self.command, args=' '.join(self.args), elapsed=time.time()-st)
+
         d = utils.getProcessOutput(self.command, self.args)
         d.addCallback(parseOffsets)
         d.addCallback(self.gotOffsets, self.basePath)
         d.addErrback(log.err)
+        d.addBoth(cb)
         return d

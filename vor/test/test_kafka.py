@@ -21,12 +21,33 @@ group1 events                2   551840658       551840689       31             
 """
 
         result = parseOffsets(text)
+
+        self.assertEqual('group1', result[0]['group'])
+        self.assertEqual('events', result[0]['topic'])
         self.assertEqual(3, len(result))
         self.assertEqual(22, result[0]['lag'])
         self.assertEqual(824687291, result[1]['offset'])
         self.assertEqual(551840689, result[2]['logSize'])
         self.assertEqual('group1_consumer.example.org-1436596330605-29002ae5-0',
                          result[2]['owner'])
+
+
+    def test_multipleTopics(self):
+        """
+        Results from different topics are properly reported.
+        """
+        text = """Group           Topic                          Pid Offset          logSize         Lag             Owner
+group1 events                0   734982565       734982587       22              group1_consumer.example.org-1436585515700-8c4fbc41-0
+group1 events                1   824687291       824687314       23              group1_consumer.example.org-1436585515700-8c4fbc41-0
+group1 events                2   551840658       551840689       31              group1_consumer.example.org-1436596330605-29002ae5-0
+group1 other                0   734982565       734982587       22              group1_consumer.example.org-1436585515700-8c4fbc41-0
+group1 other                1   824687291       824687314       23              group1_consumer.example.org-1436585515700-8c4fbc41-0
+group1 other                2   551840658       551840689       31              group1_consumer.example.org-1436596330605-29002ae5-0
+"""
+
+        result = parseOffsets(text)
+        self.assertEqual(6, len(result))
+        self.assertEqual('other', result[3]['topic'])
 
 
     def test_newPartitions(self):
@@ -74,35 +95,57 @@ class KafkaGraphiteServiceTest(unittest.TestCase):
             command="/opt/kafka/bin/kafka-consumer-offset-checker.sh",
             zookeeper="localhost",
             group="group1",
-            topic="events")
+            topics=["events"])
         self.collector.protocol = FakeGraphiteProtocol()
-        self.offsets = {
-            0: {'lag': 22,
+        self.offsets = [
+            {
+                'group': 'group1',
+                'topic': 'events',
+                'pid': 0,
+                'lag': 22,
                 'logSize': 734982587,
                 'offset': 734982565,
                 'owner': 'group1_consumer.example.org-1436585515700-8c4fbc41-0',
             },
-            1: {'lag': 23,
+            {
+                'group': 'group1',
+                'topic': 'events',
+                'pid': 1,
+                'lag': 23,
                 'logSize': 824687314,
                 'offset': 824687291,
                 'owner': 'group1_consumer.example.org-1436585515700-8c4fbc41-0',
-                },
-            2: {'lag': None,
+            },
+            {
+                'group': 'group1',
+                'topic': 'events',
+                'pid': 2,
+                'lag': None,
                 'logSize': 551840689,
                 'offset': None,
                 'owner': 'group1_consumer.example.org-1436596330605-29002ae5-0',
-                }
-            }
+            },
+        ]
+
+
+    def test_args(self):
+        self.assertEqual(
+            [
+                '--zookeeper', 'localhost',
+                '--group', 'group1',
+                '--topic', 'events'
+            ],
+            self.collector.args)
 
 
     def test_gotOffsets(self):
         self.collector.gotOffsets(self.offsets, 'prefix')
         result = self.collector.protocol.output
         self.assertEqual(22.0,
-                         result['prefix.0.lag'][0])
+                         result['prefix.events.group1.0.lag'][0])
 
 
     def test_gotUnknownLag(self):
         self.collector.gotOffsets(self.offsets, 'prefix')
         result = self.collector.protocol.output
-        self.assertNotIn('prefix.2.lag', result)
+        self.assertNotIn('prefix.events.group1.2.lag', result)
